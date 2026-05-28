@@ -2,3 +2,4 @@ fastapi
 uvicorn
 websockets
 opencv-python==4.8.1.78
+sqlalchemy
