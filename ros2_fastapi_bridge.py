@@ -20,6 +20,7 @@ import json
 from database import init_db
 from ws_manager import manager, app_state
 from routers import broken_ball
+from routers import agent
 
 try:
     from nav2_simple_commander.robot_navigator import BasicNavigator
@@ -145,6 +146,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 app.include_router(broken_ball.router)
+app.include_router(agent.router)
 
 # --- 데이터용 WebSocket 엔드포인트 ---
 @app.websocket("/ws")
