@@ -253,6 +253,12 @@ def get_broken_ball_history() -> Dict[str, Any]:
     except Exception as e:
         return {"success": False, "error_message": str(e)}
 
+@tool
+def get_current_time() -> Dict[str, str]:
+    """현재 시스템의 정확한 날짜와 시간을 조회하여 반환합니다. 오늘 날짜나 현재 시각에 대한 질문이 들어왔을 때만 호출해야 합니다."""
+    from datetime import datetime
+    return {"current_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
 # 도구 리스트 묶기
 diagnostic_tools = [
     get_node_list, 
@@ -262,7 +268,8 @@ diagnostic_tools = [
     get_node_info, 
     get_system_diagnosis,
     navigate_to_room,
-    get_broken_ball_history
+    get_broken_ball_history,
+    get_current_time
 ]
 
 class GolfbotAgent:
