@@ -224,14 +224,59 @@ def navigate_to_room(room_number: str) -> Dict[str, Any]:
         return {"success": False, "error_message": f"API 호출 중 오류 발생: {str(e)}"}
 
 @tool
-def get_broken_ball_history() -> Dict[str, Any]:
-    """현재 데이터베이스에 기록된 모든 파손 공(파손 이력) 감지 정보를 조회하여 반환합니다."""
+def get_broken_ball_history(
+    start_date: str = "",
+    end_date: str = "",
+    room_number: str = "",
+    count_only: str = "False",
+    limit: str = "50"
+) -> Dict[str, Any]:
+    """데이터베이스에 기록된 파손 공 감지 이력을 조회합니다.
+    - start_date (YYYY-MM-DD)와 end_date (YYYY-MM-DD)로 특정 일자 범위를 필터링할 수 있습니다.
+    - room_number ('1', '2', '3', '4')로 특정 방을 필터링할 수 있습니다.
+    - 단순히 건수/개수만 알고자 하거나 데이터가 매우 많을 때는 효율성을 위해 count_only='True'로 조회해야 합니다.
+    - 상세 목록 조회 시 limit(기본 50) 개수만큼만 제한하여 가져옵니다.
+    """
     try:
         from database import SessionLocal, BrokenBall
         import json
+        
+        # Parse arguments safely
+        s_date = _parse_arg(start_date)
+        e_date = _parse_arg(end_date)
+        room_id = _parse_arg(room_number)
+        is_count_only = _parse_arg(count_only).lower() in ["true", "1", "yes"]
+        
+        limit_val = 50
+        try:
+            limit_val = int(_parse_arg(limit))
+        except:
+            pass
+            
         db = SessionLocal()
         try:
-            items = db.query(BrokenBall).order_by(BrokenBall.id.desc()).all()
+            query = db.query(BrokenBall)
+            
+            # Apply filters
+            if s_date:
+                query = query.filter(BrokenBall.timestamp >= f"{s_date} 00:00:00")
+            if e_date:
+                query = query.filter(BrokenBall.timestamp <= f"{e_date} 23:59:59")
+            if room_id:
+                query = query.filter(BrokenBall.location.like(f'%"room": {room_id}%'))
+                
+            total_count = query.count()
+            
+            if is_count_only:
+                from datetime import datetime
+                return {
+                    "success": True,
+                    "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "total_count": total_count,
+                    "count_only": True
+                }
+                
+            items = query.order_by(BrokenBall.id.desc()).limit(limit_val).all()
             results = []
             for item in items:
                 try:
@@ -247,7 +292,8 @@ def get_broken_ball_history() -> Dict[str, Any]:
             return {
                 "success": True,
                 "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "count": len(results),
+                "total_count": total_count,
+                "retrieved_count": len(results),
                 "history": results
             }
         finally:
@@ -315,7 +361,9 @@ class GolfbotAgent:
         # Convert list of history dicts to LangChain Message objects
         chat_history = []
         if history:
-            for m in history:
+            # 토큰 낭비 및 대용량 페이로드 오류 방지를 위해 최근 10개의 대화 메시지만 슬라이딩 윈도우로 유지합니다.
+            recent_history = history[-10:]
+            for m in recent_history:
                 role = m.get("role")
                 content = m.get("content", "")
                 if not content:
