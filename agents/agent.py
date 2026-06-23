@@ -1,12 +1,17 @@
+import os
 import subprocess
 import re
-from typing import Dict, Any
-from langchain_ollama import ChatOllama
-from langchain_classic.agents import AgentExecutor, create_react_agent, AgentOutputParser
-from langchain_core.prompts import PromptTemplate, ChatPromptTemplate
+from typing import Dict, Any, List
+import dotenv
+from langchain_openai import ChatOpenAI
+from langchain_classic.agents import AgentExecutor, create_openai_tools_agent
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.tools import tool
-from langchain_core.agents import AgentAction, AgentFinish
-from langchain_core.exceptions import OutputParserException
+
+# Load environment variables
+base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+dotenv.load_dotenv(os.path.join(base_dir, ".env"))
 
 # -------------------------------------------------------------------------
 # 원칙 1: 모든 함수는 try-except로 감싸여 Exception 대신 dict를 반환합니다.
@@ -218,6 +223,36 @@ def navigate_to_room(room_number: str) -> Dict[str, Any]:
     except Exception as e:
         return {"success": False, "error_message": f"API 호출 중 오류 발생: {str(e)}"}
 
+@tool
+def get_broken_ball_history() -> Dict[str, Any]:
+    """현재 데이터베이스에 기록된 모든 파손 공(파손 이력) 감지 정보를 조회하여 반환합니다."""
+    try:
+        from database import SessionLocal, BrokenBall
+        import json
+        db = SessionLocal()
+        try:
+            items = db.query(BrokenBall).order_by(BrokenBall.id.desc()).all()
+            results = []
+            for item in items:
+                try:
+                    loc = json.loads(item.location)
+                except:
+                    loc = item.location
+                results.append({
+                    "id": item.id,
+                    "timestamp": item.timestamp,
+                    "location": loc
+                })
+            return {
+                "success": True,
+                "count": len(results),
+                "history": results
+            }
+        finally:
+            db.close()
+    except Exception as e:
+        return {"success": False, "error_message": str(e)}
+
 # 도구 리스트 묶기
 diagnostic_tools = [
     get_node_list, 
@@ -226,192 +261,82 @@ diagnostic_tools = [
     get_topic_hz, 
     get_node_info, 
     get_system_diagnosis,
-    navigate_to_room
+    navigate_to_room,
+    get_broken_ball_history
 ]
 
 class GolfbotAgent:
     def __init__(self, verbose: bool = True):
         self.verbose = verbose
-        # 1. 모델 인스턴스 생성
-        self.llm = ChatOllama(
-            model="gemma4:e2b", 
-            temperature=0, 
+        # 1. 모델 인스턴스 생성 (GPT-4o-Mini + GMS 프록시 엔드포인트 연동)
+        self.llm = ChatOpenAI(
+            model="gpt-4o-mini",
+            temperature=0,
+            api_key=os.getenv("GMS_API_KEY"),
+            base_url="https://gms.ssafy.io/gmsapi/api.openai.com/v1"
         )
         self.tools = diagnostic_tools
 
-        # 2. 의도 분류기 (Intent Gate) 설정
-        intent_template = (
-            "You are an intent classifier for a ROS2 robot assistant.\n"
-            "Analyze the user message and classify it into one of the following categories:\n"
-            "- CHAT: General greetings, small talk, casual conversations, OR questions referencing previous outputs/dialogue history that do NOT require executing new ROS tools.\n"
-            "- DIAGNOSTIC: Direct queries requesting NEW information about the ROS2 system, nodes, topics, system diagnostics, OR commanding the robot to navigate to a specific room.\n\n"
-            "Respond with ONLY the category name: 'CHAT' or 'DIAGNOSTIC' without any other text.\n\n"
-            "User Message: {input}\n"
-            "Category:"
-        )
-        self.intent_prompt = PromptTemplate.from_template(intent_template)
-        self.intent_chain = self.intent_prompt | self.llm
-
-        # 3. 일반 대화용 (CHAT) 프롬프트 설정
-        chat_template = [
-            ("system", "당신은 ROS2 로봇 시스템을 지원하는 친절하고 전문적인 AI 어시스턴트입니다. 사용자와 일상적인 대화(안부 인사 등)를 나누거나, 일반적인 질문에 성실하게 답변하세요. 대화 기록을 참고하여 자연스럽게 답하세요."),
-            ("human", "이전 대화 기록:\n{chat_history}\n\n현재 사용자 질문: {input}")
-        ]
-        self.chat_prompt = ChatPromptTemplate.from_messages(chat_template)
-        self.chat_chain = self.chat_prompt | self.llm
-
-    def _get_history_str(self, history: list = None) -> str:
-        if not history:
-            return "이전 대화가 없습니다."
-        return "\n".join([f"- 사용자: {m.get('content', '')}" if m.get('role') == 'user' else f"- AI 답변: {m.get('content', '')}" for m in history])
-
-    def _execute_react(self, user_input: str) -> str:
-        """이전 대화 기록 및 불필요한 레이어로 인한 오작동/반복 문제를 완벽히 우회하는 고성능 커스텀 ReAct 실행 루프"""
-        tools_str = ""
-        for t in self.tools:
-            tools_str += f"- {t.name}: {t.description}\n"
-            
+        # 2. 통합 시스템 프롬프트 설정 (일상 대화 및 도구 제어 유도)
         system_prompt = (
-            "당신은 ROS2 시스템 진단 AI입니다.\n"
-            "사용자 질문을 분석하여 어떤 도구를 호출해야 하는지 판단하세요.\n\n"
-            "도구 목록:\n"
-            f"{tools_str}\n"
-            "도구가 필요하다면 반드시 아래 형식으로 작성하세요:\n"
-            "Action: 도구이름 (반드시 위 도구 목록 중 하나)\n"
-            "Action Input: 매개변수\n\n"
-            "도구가 필요없다면 곧바로 최종 답변을 작성하세요:\n"
-            "Final Answer: 최종 답변\n\n"
-            "시작!\n\n"
-            f"Question: {user_input}"
+            "당신은 ROS2 로봇 시스템(Golfbot)을 제어하고 진단하는 전문 AI 어시스턴트입니다.\n"
+            "사용자의 질문에 친절하고 상세한 한국어로 답변하세요.\n"
+            "시스템 노드, 토픽 정보, 주파수 측정, 파손 공 감지 이력(파손 이력) 등이 필요하거나 로봇 이동 명령을 내릴 때는 제공된 도구를 활용하여 확인한 뒤 답해야 합니다.\n"
+            "도구 실행 결과에 긴 텍스트나 상세 리포트가 있으면 핵심 정보 위주로 가독성 좋게 정리하여 답변하세요.\n"
+            "도구를 쓸 필요가 없는 일상 대화나 이전 질문에 대한 설명 등은 도구를 쓰지 말고 자연스러운 한국어로 대화해 주세요."
         )
-        
-        if self.verbose:
-            print("\n[에이전트] 도구 호출 필요성 판단 (Step 1)...")
-            
-        resp = self.llm.invoke(system_prompt)
-        generation = resp.content.strip()
-        
-        if self.verbose:
-            print(f"[LLM 판단 결과]:\n{generation}")
-            
-        # 바로 최종 답변을 낸 경우 조기 종료
-        if "Final Answer:" in generation:
-            return generation.split("Final Answer:")[-1].strip()
-        if "최종 답변:" in generation:
-            return generation.split("최종 답변:")[-1].strip()
-            
-        # 수동 Action 파싱
-        action = None
-        action_input = ""
-        
-        if "Action:" in generation:
-            action_part = generation.split("Action:")[-1].strip()
-            if "Action Input:" in action_part:
-                parts = action_part.split("Action Input:")
-                action = parts[0].strip()
-                action_input = parts[1].strip()
-            else:
-                action = action_part.strip()
-                
-            if "\n" in action:
-                action = action.split("\n")[0].strip()
-            if "\n" in action_input:
-                action_input = action_input.split("\n")[0].strip()
-                
-            action = action.strip('"').strip("'").strip()
-            action_input = action_input.strip('"').strip("'").strip()
-            
-        if not action:
-            # Action 형식을 못 맞췄지만 텍스트가 있으면 그대로 반환
-            return generation
-            
-        if self.verbose:
-            print(f"[도구 실행] 실행 도구: {action}, 매개변수: {action_input}")
-            
-        # 도구 검색 및 수행
-        tool_found = None
-        for t in self.tools:
-            if t.name == action:
-                tool_found = t
-                break
-                
-        if tool_found:
-            try:
-                if not action_input or action_input.lower() in ["none", "null", "empty"]:
-                    obs = tool_found.invoke({})
-                else:
-                    obs = tool_found.invoke(action_input)
-            except Exception as e:
-                obs = {"success": False, "error": str(e)}
-        else:
-            obs = {"success": False, "error": f"Tool '{action}' not found."}
-            
-        if self.verbose:
-            print(f"[도구 실행 결과]: {obs}")
-            
-        # 2단계: 도구 실행 결과를 바탕으로 최종 답변 생성
-        obs_str = str(obs)
-        if len(obs_str) > 2000:
-            obs_str = obs_str[:2000] + "\n... [결과가 너무 길어 생략됨]"
-            
-        step2_prompt = (
-            "당신은 ROS2 시스템 진단 AI입니다.\n"
-            f"사용자 질문: {user_input}\n\n"
-            f"도구 실행 결과:\n{obs_str}\n\n"
-            "---\n"
-            "위 도구 실행 결과를 바탕으로, 사용자 질문에 대한 최종적이고 상세한 한국어 답변을 작성하세요.\n"
-            "결과에서 정확한 정보를 찾을 수 없더라도 절대 코드를 짜거나 JSON 포맷으로 대답하지 마세요.\n"
-            "자연스러운 한국어 문장으로 답변해야 합니다.\n"
-            "반드시 아래 형식으로만 작성하세요:\n"
-            "Final Answer: [여기에 최종 한국어 답변 작성]"
+
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", system_prompt),
+            MessagesPlaceholder(variable_name="chat_history"),
+            ("human", "{input}"),
+            MessagesPlaceholder(variable_name="agent_scratchpad"),
+        ])
+
+        # 3. OpenAI Tools 에이전트 및 실행기 생성
+        self.agent = create_openai_tools_agent(self.llm, self.tools, prompt)
+        self.agent_executor = AgentExecutor(
+            agent=self.agent,
+            tools=self.tools,
+            verbose=self.verbose
         )
-        
-        if self.verbose:
-            print("\n[에이전트] 최종 답변 생성 (Step 2)...")
-            
-        resp2 = self.llm.invoke(step2_prompt)
-        generation2 = resp2.content.strip()
-        
-        if self.verbose:
-            print(f"[LLM 최종 답변]:\n{generation2}")
-            
-        if "Final Answer:" in generation2:
-            return generation2.split("Final Answer:")[-1].strip()
-        if "최종 답변:" in generation2:
-            return generation2.split("최종 답변:")[-1].strip()
-            
-        return generation2
 
-    def chat(self, user_input: str, history: list = None) -> str:
-        # 1. 의도 분류 (Intent Classification)
-        intent_res = self.intent_chain.invoke({"input": user_input})
-        intent = intent_res.content.strip().upper()
-        if self.verbose:
-            print(f"\n[의도 게이트] 감지된 의도: {intent}")
+    def chat(self, user_input: str, history: List[Dict[str, Any]] = None) -> str:
+        # Convert list of history dicts to LangChain Message objects
+        chat_history = []
+        if history:
+            for m in history:
+                role = m.get("role")
+                content = m.get("content", "")
+                if not content:
+                    continue
+                # Remove mic prefix to avoid polluting chat history with mic emojis
+                if content.startswith("🎙️ "):
+                    content = content[3:]
+                
+                if role == "user":
+                    chat_history.append(HumanMessage(content=content))
+                elif role == "assistant":
+                    chat_history.append(AIMessage(content=content))
 
-        chat_history_str = self._get_history_str(history)
-
-        # 2. 의도에 따른 분기 처리
-        if "DIAGNOSTIC" in intent:
-            if self.verbose:
-                print("[에이전트] ROS diagnostics/ReAct 패턴 실행 중...")
-            output = self._execute_react(user_input)
-        else:
-            if self.verbose:
-                print("[일반 대화] 일상 및 기타 질의 처리 중...")
-            response = self.chat_chain.invoke({
+        # Execute
+        try:
+            res = self.agent_executor.invoke({
                 "input": user_input,
-                "chat_history": chat_history_str
+                "chat_history": chat_history
             })
-            output = response.content
-
-        return output
+            return res.get("output", "").strip()
+        except Exception as e:
+            if self.verbose:
+                import traceback
+                traceback.print_exc()
+            return f"에러가 발생했습니다: {str(e)}"
 
 # 5. 실행 테스트 및 CLI 루프
 if __name__ == "__main__":
     agent = GolfbotAgent(verbose=True)
     print("====================================================")
-    print(" Golfbot Conversational Agent (ReAct + Intent Gate) ")
+    print(" Golfbot Conversational Agent (Native Function Calling) ")
     print("====================================================")
     print("종료하려면 'exit' 또는 'quit'을 입력하세요.\n")
     

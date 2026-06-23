@@ -21,6 +21,7 @@ from database import init_db
 from ws_manager import manager, app_state
 from routers import broken_ball
 from routers import agent
+from routers import auth
 
 try:
     from nav2_simple_commander.robot_navigator import BasicNavigator
@@ -147,6 +148,7 @@ app = FastAPI(lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 app.include_router(broken_ball.router)
 app.include_router(agent.router)
+app.include_router(auth.router)
 
 # --- 데이터용 WebSocket 엔드포인트 ---
 @app.websocket("/ws")
