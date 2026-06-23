@@ -243,8 +243,10 @@ def get_broken_ball_history() -> Dict[str, Any]:
                     "timestamp": item.timestamp,
                     "location": loc
                 })
+            from datetime import datetime
             return {
                 "success": True,
+                "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "count": len(results),
                 "history": results
             }
@@ -289,6 +291,7 @@ class GolfbotAgent:
             "당신은 ROS2 로봇 시스템(Golfbot)을 제어하고 진단하는 전문 AI 어시스턴트입니다.\n"
             "사용자의 질문에 친절하고 상세한 한국어로 답변하세요.\n"
             "시스템 노드, 토픽 정보, 주파수 측정, 파손 공 감지 이력(파손 이력) 등이 필요하거나 로봇 이동 명령을 내릴 때는 제공된 도구를 활용하여 확인한 뒤 답해야 합니다.\n"
+            "특히 '오늘', '어제', '최근' 등의 시간이나 특정 날짜를 기준으로 파손 이력을 질문하는 경우, 반드시 현재 시각 도구(get_current_time)를 활용하거나 조회된 정보의 현재 서버 시간(server_time)과 각 이력의 타임스탬프를 꼼꼼히 대조하여 날짜를 분석한 뒤 답변해야 합니다. (예: 현재 날짜가 2026-06-23인데 가장 최근 감지 이력의 타임스탬프가 2026-05-28이라면, 오늘 감지된 이력은 없다고 명확히 답변해야 하며 잘못 매칭해서는 안 됩니다.)\n"
             "도구 실행 결과에 긴 텍스트나 상세 리포트가 있으면 핵심 정보 위주로 가독성 좋게 정리하여 답변하세요.\n"
             "도구를 쓸 필요가 없는 일상 대화나 이전 질문에 대한 설명 등은 도구를 쓰지 말고 자연스러운 한국어로 대화해 주세요."
         )
