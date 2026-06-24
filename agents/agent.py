@@ -194,19 +194,22 @@ def get_system_diagnosis(include_network: str = "False") -> Dict[str, Any]:
 
 @tool
 def navigate_to_room(room_number: str) -> Dict[str, Any]:
-    """로봇을 지정된 방(1, 2, 3, 4)으로 이동시킵니다. 입력은 반드시 '1', '2', '3', '4' 중 하나여야 합니다."""
+    """로봇을 지정된 방(1, 2, 3, 4) 또는 카운터로 이동시킵니다. 입력은 반드시 '1', '2', '3', '4', 'counter', '카운터' 중 하나여야 합니다."""
     room_map = {
         "1": {"x": 1.83, "y": 1.45},
         "2": {"x": 1.83, "y": -1.61},
         "3": {"x": -0.40, "y": 1.45},
         "4": {"x": -0.40, "y": -1.61},
+        "counter": {"x": -2.0, "y": -0.5},
+        "카운터": {"x": -2.0, "y": -0.5},
     }
     
     room_id = str(room_number).strip()
     if room_id not in room_map:
-        return {"success": False, "error_message": f"잘못된 방 번호입니다. '1', '2', '3', '4' 중에서 선택하세요. 입력값: {room_id}"}
+        return {"success": False, "error_message": f"잘못된 방 번호 또는 위치입니다. '1', '2', '3', '4', 'counter', '카운터' 중에서 선택하세요. 입력값: {room_id}"}
         
     target = room_map[room_id]
+    location_name = f"{room_id}번 방" if room_id in ["1", "2", "3", "4"] else room_id
     
     try:
         import requests
@@ -214,12 +217,12 @@ def navigate_to_room(room_number: str) -> Dict[str, Any]:
         try:
             response = requests.post("http://127.0.0.1:8000/nav", json=target, timeout=2)
             if response.status_code == 200:
-                return {"success": True, "message": f"{room_id}번 방으로 이동 명령을 전달했습니다.", "target": target}
+                return {"success": True, "message": f"{location_name}으로 이동 명령을 전달했습니다.", "target": target}
             else:
                 return {"success": False, "error_message": f"이동 명령 전송 실패: {response.text}"}
         except Timeout:
             # Nav2 action server 승인 지연으로 인한 타임아웃 발생 시, 정상 비동기 전송으로 간주
-            return {"success": True, "message": f"{room_id}번 방으로 이동 명령을 성공적으로 전달했습니다. (로봇이 백그라운드에서 주행을 시작합니다.)", "target": target}
+            return {"success": True, "message": f"{location_name}으로 이동 명령을 성공적으로 전달했습니다. (로봇이 백그라운드에서 주행을 시작합니다.)", "target": target}
     except Exception as e:
         return {"success": False, "error_message": f"API 호출 중 오류 발생: {str(e)}"}
 
