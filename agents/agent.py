@@ -176,10 +176,62 @@ def get_system_diagnosis(include_network: str = "False") -> Dict[str, Any]:
                 distro = line.split(':')[-1].strip()
                 break
                 
-        # 불필요하게 긴 네트워크 정보 필터링
-        report = result.stdout
-        if not net_bool and "PLATFORM INFORMATION" in report:
-            report = report[report.index("PLATFORM INFORMATION"):]
+        # 섹션 단위 파서로 대형 데이터 차단 및 핵심 정보만 재구성
+        lines = result.stdout.splitlines()
+        pre_section_lines = []
+        current_section = None
+        sections = {}
+        
+        for line in lines:
+            if line.startswith("   ") and line.strip().isupper():
+                current_section = line.strip()
+                sections[current_section] = []
+            elif current_section is None:
+                pre_section_lines.append(line)
+            else:
+                sections[current_section].append(line)
+        
+        clean_report_parts = []
+        if pre_section_lines:
+            clean_report_parts.extend(pre_section_lines)
+            clean_report_parts.append("")
+            
+        if "PLATFORM INFORMATION" in sections:
+            clean_report_parts.append("   PLATFORM INFORMATION")
+            clean_report_parts.extend(sections["PLATFORM INFORMATION"])
+            clean_report_parts.append("")
+            
+        if "ROS 2 INFORMATION" in sections:
+            clean_report_parts.append("   ROS 2 INFORMATION")
+            clean_report_parts.extend(sections["ROS 2 INFORMATION"])
+            clean_report_parts.append("")
+            
+        if "RMW MIDDLEWARE" in sections:
+            clean_report_parts.append("   RMW MIDDLEWARE")
+            clean_report_parts.extend(sections["RMW MIDDLEWARE"])
+            clean_report_parts.append("")
+            
+        if net_bool and "NETWORK CONFIGURATION" in sections:
+            clean_report_parts.append("   NETWORK CONFIGURATION")
+            clean_report_parts.extend(sections["NETWORK CONFIGURATION"])
+            clean_report_parts.append("")
+            
+        if "QOS COMPATIBILITY LIST" in sections:
+            clean_report_parts.append("   QOS COMPATIBILITY LIST")
+            qos_lines = sections["QOS COMPATIBILITY LIST"]
+            if len(qos_lines) > 15:
+                clean_report_parts.extend(qos_lines[:15])
+                clean_report_parts.append(f"... ({len(qos_lines) - 15} lines of QoS details omitted for brevity)")
+            else:
+                clean_report_parts.extend(qos_lines)
+            clean_report_parts.append("")
+            
+        if "TOPIC LIST" in sections:
+            clean_report_parts.append("   TOPIC LIST")
+            clean_report_parts.append("(시스템 내 토픽 세부 정보는 토큰 절약을 위해 생략되었습니다. 전체 토픽 확인이 필요하면 get_topic_list 도구를 사용하세요.)")
+            clean_report_parts.append("")
+            
+        report = "\n".join(clean_report_parts)
             
         return {
             "success": True,
@@ -374,6 +426,10 @@ class GolfbotAgent:
                 # Remove mic prefix to avoid polluting chat history with mic emojis
                 if content.startswith("🎙️ "):
                     content = content[3:]
+                
+                # 이전 대화 내용이 너무 길어 토큰 에러를 발생하는 것 방지
+                if len(content) > 2000:
+                    content = content[:2000] + "\n\n(이전 대화 내용이 너무 길어 토큰 절약을 위해 일부 생략되었습니다.)"
                 
                 if role == "user":
                     chat_history.append(HumanMessage(content=content))

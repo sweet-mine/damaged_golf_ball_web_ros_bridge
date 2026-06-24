@@ -26,9 +26,11 @@ from routers import auth
 try:
     from nav2_simple_commander.robot_navigator import BasicNavigator
     from geometry_msgs.msg import PoseStamped
+    from nav_msgs.msg import Odometry
 except ImportError:
     BasicNavigator = None
     PoseStamped = None
+    Odometry = None
 
 # --- 웹소켓 매니저 (ws_manager.py로 분리됨) ---
 loop = None
@@ -50,12 +52,23 @@ class WebBridgeNode(Node):
         # 카메라 토픽 구독 추가
         self.camera_sub = self.create_subscription(Image, 'camera/image_raw', self.camera_callback, 10)
         
+        # 위치 토픽 구독 추가
+        if Odometry is not None:
+            self.pose_sub = self.create_subscription(
+                Odometry,
+                '/odom',
+                self.odom_callback,
+                10
+            )
+        else:
+            self.get_logger().warn("Odometry could not be imported. Location tracking disabled.")
+
         # 로봇 통신 모니터링 변수 및 타이머 등록
         self.last_msg_time = 0.0
         self.is_connected = False
         self.conn_timer = self.create_timer(1.0, self.conn_timer_callback)
         
-        self.get_logger().info("FastAPI Web Bridge Node Started (with Camera).")
+        self.get_logger().info("FastAPI Web Bridge Node Started (with Camera and Location).")
 
     def conn_timer_callback(self):
         current_time = time.time()
@@ -106,6 +119,43 @@ class WebBridgeNode(Node):
                     loop.call_soon_threadsafe(new_frame_event.set)
         except Exception as e:
             self.get_logger().error(f"Camera Callback Error: {e}")
+
+    def odom_callback(self, msg):
+        self.last_msg_time = time.time()
+        x = msg.pose.pose.position.x
+        y = msg.pose.pose.position.y
+        
+        closest_loc = "이동 중"
+        min_dist = float('inf')
+        threshold = 1.0  # 1.0 meter threshold
+        
+        room_map = {
+            "1번 방": {"x": 1.83, "y": 1.45},
+            "2번 방": {"x": 1.83, "y": -1.61},
+            "3번 방": {"x": -0.40, "y": 1.45},
+            "4번 방": {"x": -0.40, "y": -1.61},
+            "카운터": {"x": -2.0, "y": -0.5},
+        }
+        
+        import math
+        for name, coords in room_map.items():
+            dist = math.sqrt((x - coords["x"])**2 + (y - coords["y"])**2)
+            if dist < min_dist:
+                min_dist = dist
+                closest_loc = name
+                
+        location_name = closest_loc if min_dist <= threshold else "이동 중"
+        
+        data = {
+            'type': 'location_data',
+            'data': {
+                'x': round(x, 2),
+                'y': round(y, 2),
+                'location': location_name
+            }
+        }
+        if loop:
+            asyncio.run_coroutine_threadsafe(manager.broadcast(data), loop)
 
 # --- 데이터베이스 설정 (database.py로 분리됨) ---
 
