@@ -50,17 +50,95 @@ async def create_broken_ball(report: BrokenBallReport, db: Session = Depends(get
     return {"status": "success", "message": "Broken ball reported successfully", "id": new_id}
 
 @router.get("/")
-async def get_all_broken_balls(db: Session = Depends(get_db)):
-    items = db.query(BrokenBall).order_by(BrokenBall.id.desc()).all()
+async def get_all_broken_balls(
+    page: int = 1,
+    limit: int = 10,
+    room: str = "all",
+    date: str | None = None,
+    db: Session = Depends(get_db)
+):
+    query = db.query(BrokenBall)
+    
+    # Apply room filter
+    if room != "all":
+        try:
+            room_int = int(room)
+            query = query.filter(BrokenBall.location.like(f'%"room": {room_int}%'))
+        except ValueError:
+            pass
+            
+    # Apply date filter
+    if date:
+        query = query.filter(BrokenBall.timestamp.like(f"{date}%"))
+        
+    # Get total count matching the filters
+    total_count = query.count()
+    
+    # Apply pagination and sorting
+    items = query.order_by(BrokenBall.id.desc()).offset((page - 1) * limit).limit(limit).all()
+    
     results = []
     for item in items:
         results.append({
             "id": item.id,
             "timestamp": item.timestamp,
             "location": json.loads(item.location),
-            "image": item.image
+            "image": None  # Omit base64 image data to reduce initial load traffic
         })
-    return {"status": "success", "data": results}
+        
+    return {
+        "status": "success",
+        "data": {
+            "items": results,
+            "total_count": total_count,
+            "page": page,
+            "limit": limit
+        }
+    }
+
+@router.get("/stats")
+async def get_broken_ball_stats(
+    date: str | None = None,
+    db: Session = Depends(get_db)
+):
+    # 1. Total count of all records in the database
+    total_count = db.query(BrokenBall).count()
+    
+    # 2. Room counts (filtered by date if provided)
+    room_query = db.query(BrokenBall)
+    if date:
+        room_query = room_query.filter(BrokenBall.timestamp.like(f"{date}%"))
+        
+    room_items = room_query.all()
+    room_counts = {1: 0, 2: 0, 3: 0, 4: 0}
+    for item in room_items:
+        try:
+            loc = json.loads(item.location)
+            r = loc.get("room")
+            if r in room_counts:
+                room_counts[r] += 1
+        except Exception:
+            pass
+            
+    # 3. Date counts (all history, unfiltered, for trend chart)
+    all_items = db.query(BrokenBall.timestamp).all()
+    date_counts = {}
+    for (ts,) in all_items:
+        try:
+            d = ts.split(" ")[0]
+            date_counts[d] = date_counts.get(d, 0) + 1
+        except Exception:
+            pass
+            
+    return {
+        "status": "success",
+        "data": {
+            "total_count": total_count,
+            "room_counts": room_counts,
+            "date_counts": date_counts
+        }
+    }
+
 
 @router.get("/{item_id}")
 async def get_broken_ball(item_id: int, db: Session = Depends(get_db)):
